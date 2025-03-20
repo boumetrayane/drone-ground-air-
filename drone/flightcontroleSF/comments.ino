@@ -1,42 +1,23 @@
 #include <Wire.h>
 #include <WiFi.h>
-#include <PulsePosition.h>
 #include <WebServer.h>
 #include "web_radio-transmeter-index.h"
 
 // Web server part
-const char* ssid = "drone";
-const char* password = "rayane2005";
+const char* ssid = "drone"; // Wi-Fi SSID
+const char* password = "rayane2005"; // Wi-Fi password
 
-WebServer server(80);
+WebServer server(80); // Create a web server on port 80
 
-void handleRoot() {
-  server.send(200, "text/html", MAIN_page);
-}
+// Variables to store joystick values from the web page
+int throttleValue = 1000;
+int rollValue = 1000;
+int pitchValue = 1000;
+int yawValue = 1000;
+bool roadMode = false;
+bool emergencyStop = false;
 
-// Variable to store the HTTP request
-String header;
-
-// Auxiliar variables to store the current output state
-String output26State = "off";
-String output27State = "off";
-
-// Assign output variables to GPIO pins
-const int output26 = 26;
-const int output27 = 27;
-
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0;
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
-
-// MPU and receiver, radio-transmitter part
-PulsePositionInput ReceiverInput(RISING);
-float ReceiverValue[] = {0, 0, 0, 0, 0, 0, 0, 0};
-int ChannelNumber = 0;
-
+// Flight control variables
 float RollRate, RollPitch, RollYaw;
 float RateRoll, RatePitch, RateYaw;
 float RateCalibrationRoll, RateCalibrationPitch, RateCalibrationYaw;
@@ -68,6 +49,221 @@ float PAngleRoll = 2, PAnglePitch = PAngleRoll;
 float IAngleRoll = 0, IAnglePitch = IAngleRoll;
 float DAngleRoll = 0, DAnglePitch = DAngleRoll;
 
+// Web server handlers
+void handleRoot() {
+  server.send(200, "text/html", MAIN_page);
+  static const char PROGMEM INDEX_HTML[] = R"rawliteral(
+<html>
+<head>
+  <title>Drone Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #2c3e50; /* Dark background */
+      color: #ecf0f1; /* Light text */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: space-around;
+      width: 100%;
+      max-width: 600px;
+    }
+
+    .joystick {
+      width: 120px;
+      height: 120px;
+      background-color: #34495e; /* Darker background for joysticks */
+      border-radius: 50%;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); /* Subtle shadow */
+    }
+
+    .joystick-inner {
+      width: 60px;
+      height: 60px;
+      background-color: #e74c3c; /* Red inner circle */
+      border-radius: 50%;
+      position: absolute;
+      cursor: pointer;
+      transition: transform 0.1s ease; /* Smooth movement */
+    }
+
+    .button {
+      padding: 10px 20px;
+      background-color: #3498db; /* Blue button */
+      border: none;
+      border-radius: 5px;
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 20px;
+      transition: background-color 0.2s ease; /* Smooth hover effect */
+    }
+
+    .button:active {
+      background-color: #2980b9; /* Darker blue when pressed */
+    }
+
+    .emergency-button {
+      background-color: #e74c3c; /* Red for emergency button */
+    }
+
+    .emergency-button:active {
+      background-color: #c0392b; /* Darker red when pressed */
+    }
+
+    .status {
+      margin-top: 20px;
+      font-size: 18px;
+      text-align: center;
+    }
+
+    @media (max-width: 600px) {
+      h1 {
+        font-size: 20px;
+      }
+
+      .joystick {
+        width: 100px;
+        height: 100px;
+      }
+
+      .joystick-inner {
+        width: 50px;
+        height: 50px;
+      }
+
+      .button {
+        padding: 8px 16px;
+        font-size: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>Drone Control</h1>
+  <div class="controls">
+    <!-- Left Joystick (Throttle and Roll) -->
+    <div class="joystick" id="joystickLeft">
+      <div class="joystick-inner"></div>
+    </div>
+    <!-- Right Joystick (Pitch and Yaw) -->
+    <div class="joystick" id="joystickRight">
+      <div class="joystick-inner"></div>
+    </div>
+  </div>
+  <!-- Road Mode Button -->
+  <button class="button" onclick="toggleRoadMode()">Road Mode</button>
+  <!-- Emergency Stop Button -->
+  <button class="button emergency-button" onclick="emergencyStop()">Emergency Stop</button>
+  <!-- Status Display -->
+  <div class="status">
+    <p>Throttle: <span id="throttleValue">1500</span></p>
+    <p>Roll: <span id="rollValue">1500</span></p>
+    <p>Pitch: <span id="pitchValue">1500</span></p>
+    <p>Yaw: <span id="yawValue">1500</span></p>
+  </div>
+
+  <script>
+    let roadMode = false;
+
+    // Toggle Road Mode
+    function toggleRoadMode() {
+      roadMode = !roadMode;
+      fetch(`/control?channel=roadMode&value=${roadMode ? 1 : 0}`)
+        .then(response => response.text())
+        .then(data => console.log(data));
+      alert(roadMode ? "Road Mode ON" : "Road Mode OFF");
+    }
+
+    // Emergency Stop
+    function emergencyStop() {
+      fetch(`/control?channel=emergency&value=1`)
+        .then(response => response.text())
+        .then(data => console.log(data));
+      alert("Emergency Stop Activated");
+    }
+
+    // Send Control Commands to ESP32
+    function sendCommand(channel, value) {
+      fetch(`/control?channel=${channel}&value=${value}`)
+        .then(response => response.text())
+        .then(data => console.log(data));
+
+      // Update status display
+      if (channel === 'throttle') document.getElementById('throttleValue').textContent = value;
+      if (channel === 'roll') document.getElementById('rollValue').textContent = value;
+      if (channel === 'pitch') document.getElementById('pitchValue').textContent = value;
+      if (channel === 'yaw') document.getElementById('yawValue').textContent = value;
+    }
+
+    // Left Joystick Event Listener (Throttle and Roll)
+    const joystickLeft = document.getElementById('joystickLeft');
+    joystickLeft.addEventListener('mousemove', (e) => {
+      const rect = joystickLeft.getBoundingClientRect();
+      const x = e.clientX - rect.left - 60; // X position relative to joystick center
+      const y = e.clientY - rect.top - 60; // Y position relative to joystick center
+      const throttle = Math.round((y / 60) * 500 + 1500); // Map Y to throttle (1000-2000)
+      const roll = Math.round((x / 60) * 500 + 1500); // Map X to roll (1000-2000)
+      sendCommand('throttle', throttle);
+      sendCommand('roll', roll);
+    });
+
+    // Right Joystick Event Listener (Pitch and Yaw)
+    const joystickRight = document.getElementById('joystickRight');
+    joystickRight.addEventListener('mousemove', (e) => {
+      const rect = joystickRight.getBoundingClientRect();
+      const x = e.clientX - rect.left - 60; // X position relative to joystick center
+      const y = e.clientY - rect.top - 60; // Y position relative to joystick center
+      const pitch = Math.round((y / 60) * 500 + 1500); // Map Y to pitch (1000-2000)
+      const yaw = Math.round((x / 60) * 500 + 1500); // Map X to yaw (1000-2000)
+      sendCommand('pitch', pitch);
+      sendCommand('yaw', yaw);
+    });
+  </script>
+</body>
+</html>
+)rawliteral";
+//Instatiation of different HTTP hander
+ static esp_err_t index_handler(httpd_req_t *req){
+   httpd_resp_set_type(req, "text/html");
+   return httpd_resp_send(req, (const char *)INDEX_HTML, strlen(INDEX_HTML));
+ }
+}
+
+void handleControl() {
+  String channel = server.arg("channel");
+  int value = server.arg("value").toInt();
+
+  if (channel == "throttle") throttleValue = value;
+  else if (channel == "roll") rollValue = value;
+  else if (channel == "pitch") pitchValue = value;
+  else if (channel == "yaw") yawValue = value;
+  else if (channel == "roadMode") roadMode = (value == 1);
+  else if (channel == "emergency") emergencyStop = (value == 1);
+
+  server.send(200, "text/plain", "OK");
+}
+
+// Kalman filter function
 void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, float KalmanMeasurement) {
   KalmanState = KalmanState + 0.004 * KalmanInput;
   KalmanUncertainty = KalmanUncertainty + 0.004 * 0.004 * 4 * 4;
@@ -78,6 +274,7 @@ void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, fl
   Kalman1DOutput[1] = KalmanUncertainty;
 }
 
+// Read gyro and accelerometer data
 void gyro_signals() {
   Wire.beginTransmission(0x68);
   Wire.write(0x1A);
@@ -115,7 +312,8 @@ void gyro_signals() {
   AnglePitch = -atan(AccX / sqrt(AccY * AccY + AccZ * AccZ)) * 1 / (3.142 / 180);
 }
 
-void pid_equation(float Error, float P, float I, float D, float PrevError, float PrevIterm) {
+// PID equation
+void pid_equation(float Error, float P, float I, float D, float PrevError, float PrevIterm, float* PIDReturn) {
   float Pterm = P * Error;
   float Iterm = PrevIterm + I * (Error + PrevError) * 0.004 / 2;
   if (Iterm > 400) Iterm = 400;
@@ -137,147 +335,162 @@ void reset_pid() {
 }
 
 void setup() {
-  pinMode(5, OUTPUT);
-  digitalWrite(5, HIGH);
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
+  // Initialize serial communication
+  Serial.begin(115200);
 
+  // Initialize WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Initialize web server
+  server.on("/", handleRoot);
+  server.on("/control", handleControl);
+  server.begin();
+  Serial.println("HTTP server started");
+
+  // Initialize I2C and MPU6050
   Wire.setClock(400000);
   Wire.begin();
   delay(250);
-
   Wire.beginTransmission(0x68);
   Wire.write(0x6B);
   Wire.write(0x00);
   Wire.endTransmission();
 
-  for (RateCalibrationNumber = 0; RateCalibrationNumber < 2000; RateCalibrationNumber++) {
+  // Calibrate gyro
+  for (int i = 0; i < 2000; i++) {
     gyro_signals();
     RateCalibrationRoll += RateRoll;
     RateCalibrationPitch += RatePitch;
     RateCalibrationYaw += RateYaw;
     delay(1);
   }
-
   RateCalibrationRoll /= 2000;
   RateCalibrationPitch /= 2000;
   RateCalibrationYaw /= 2000;
 
-  analogWriteFrequency(1, 250);
-  analogWriteFrequency(2, 250);
-  analogWriteFrequency(3, 250);
+  // Initialize motor pins
+  analogWriteFrequency(17, 250);
+  analogWriteFrequency(16, 250);
   analogWriteFrequency(4, 250);
+  analogWriteFrequency(2, 250);
   analogWriteResolution(12);
-  pinMode(6, OUTPUT);
-  digitalWrite(6, HIGH);
+  pinMode(17, OUTPUT);
+  pinMode(16, OUTPUT);
+  pinMode(4, OUTPUT);
+  pinMode(2, OUTPUT);
 
-  ReceiverInput.begin(14);
-  while (ReceiverValue[2] < 1020 || ReceiverValue[2] > 1050) {
-    read_receiver();
-    delay(4);
-  }
-  LoopTimer = micros();
+  // Initialize LoopTimer
+  LoopTimer = micros(); // Add this line
 
-  // Web server part
-  Serial.begin(115200);
-  pinMode(output26, OUTPUT);
-  pinMode(output27, OUTPUT);
-  digitalWrite(output26, LOW);
-  digitalWrite(output27, LOW);
-
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected.");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-  server.begin();
-
-  server.on("/", handleRoot);
-  server.begin();
-  Serial.println("HTTP server started");
-
-  analogWriteFrequency(12, 250);
-  analogWriteResolution(12);
-
-  while (ReceiverValue[2] < 1020 || ReceiverValue[2] > 1050) {
-    read_receiver();
-    delay(4);
-  }
 }
 
 void loop() {
+  while (micros() - LoopTimer < 4000); // Wait for 4ms (250Hz)
+  LoopTimer = micros();
+  server.handleClient();
+
+  // Handle incoming client requests
+  server.handleClient();
+
+  // If emergency stop is activated, cut off motor inputs
+  if (emergencyStop) {
+    MotorInput1 = 1000;
+    MotorInput2 = 1000;
+    MotorInput3 = 1000;
+    MotorInput4 = 1000;
+    analogWrite(17, MotorInput1);
+    analogWrite(16, MotorInput2);
+    analogWrite(4, MotorInput3);
+    analogWrite(2, MotorInput4);
+    return; // Skip the rest of the loop
+  }
+
   gyro_signals();
   RateRoll -= RateCalibrationRoll;
   RatePitch -= RateCalibrationPitch;
   RateYaw -= RateCalibrationYaw;
+
   kalman_1d(KalmanAngleRoll, KalmanUncertaintyAngleRoll, RateRoll, AngleRoll);
   KalmanAngleRoll = Kalman1DOutput[0];
   KalmanUncertaintyAngleRoll = Kalman1DOutput[1];
+
   kalman_1d(KalmanAnglePitch, KalmanUncertaintyAnglePitch, RatePitch, AnglePitch);
   KalmanAnglePitch = Kalman1DOutput[0];
   KalmanUncertaintyAnglePitch = Kalman1DOutput[1];
-  read_receiver();
-  DesiredAngleRoll = 0.10 * (ReceiverValue[0] - 1500);
-  DesiredAnglePitch = 0.10 * (ReceiverValue[1] - 1500);
-  InputThrottle = ReceiverValue[2];
-  DesiredRateYaw = 0.15 * (ReceiverValue[3] - 1500);
+
+  DesiredAngleRoll = 0.10 * (rollValue - 1500);
+  DesiredAnglePitch = 0.10 * (pitchValue - 1500);
+  InputThrottle = throttleValue;
+  DesiredRateYaw = 0.15 * (yawValue - 1500);
   ErrorAngleRoll = DesiredAngleRoll - KalmanAngleRoll;
   ErrorAnglePitch = DesiredAnglePitch - KalmanAnglePitch;
+
   pid_equation(ErrorAngleRoll, PAngleRoll, IAngleRoll, DAngleRoll, PrevErrorAngleRoll, PrevItermAngleRoll);
   DesiredRateRoll = PIDReturn[0];
   PrevErrorAngleRoll = PIDReturn[1];
   PrevItermAngleRoll = PIDReturn[2];
+
   pid_equation(ErrorAnglePitch, PAnglePitch, IAnglePitch, DAnglePitch, PrevErrorAnglePitch, PrevItermAnglePitch);
   DesiredRatePitch = PIDReturn[0];
   PrevErrorAnglePitch = PIDReturn[1];
   PrevItermAngleRoll = PIDReturn[2];
+
   ErrorRateRoll = DesiredRateRoll - RateRoll;
   ErrorRatePitch = DesiredRatePitch - RatePitch;
   ErrorRateYaw = DesiredRateYaw - RateYaw;
+
   pid_equation(ErrorRateRoll, PRateRoll, IRateRoll, DRateRoll, PrevErrorRateRoll, PrevItermRateRoll);
   InputRoll = PIDReturn[0];
   PrevErrorRateRoll = PIDReturn[1];
   PrevItermRateRoll = PIDReturn[2];
+
   pid_equation(ErrorRatePitch, PRatePitch, IRatePitch, DRatePitch, PrevErrorRatePitch, PrevItermRatePitch);
   InputPitch = PIDReturn[0];
   PrevErrorRatePitch = PIDReturn[1];
   PrevItermRatePitch = PIDReturn[2];
+
   pid_equation(ErrorRateYaw, PRateYaw, IRateYaw, DRateYaw, PrevErrorRateYaw, PrevItermRateYaw);
   InputYaw = PIDReturn[0];
   PrevErrorRateYaw = PIDReturn[1];
   PrevItermRateYaw = PIDReturn[2];
+
   if (InputThrottle > 1800) InputThrottle = 1800;
   MotorInput1 = 1.024 * (InputThrottle - InputRoll - InputPitch - InputYaw);
   MotorInput2 = 1.024 * (InputThrottle - InputRoll + InputPitch + InputYaw);
   MotorInput3 = 1.024 * (InputThrottle + InputRoll + InputPitch - InputYaw);
   MotorInput4 = 1.024 * (InputThrottle + InputRoll - InputPitch + InputYaw);
+
   if (MotorInput1 > 2000) MotorInput1 = 1999;
   if (MotorInput2 > 2000) MotorInput2 = 1999;
   if (MotorInput3 > 2000) MotorInput3 = 1999;
   if (MotorInput4 > 2000) MotorInput4 = 1999;
+
   int ThrottleIdle = 1180;
+
   if (MotorInput1 < ThrottleIdle) MotorInput1 = ThrottleIdle;
   if (MotorInput2 < ThrottleIdle) MotorInput2 = ThrottleIdle;
   if (MotorInput3 < ThrottleIdle) MotorInput3 = ThrottleIdle;
   if (MotorInput4 < ThrottleIdle) MotorInput4 = ThrottleIdle;
+
   int ThrottleCutOff = 1000;
-  if (ReceiverValue[2] < 1050) {
+
+  if (ReceiverValue[2] < 1050) { //if the web server sends a signal under 1050ms throuth the 2nd channel (throttle) call rest_pid
     MotorInput1 = ThrottleCutOff;
     MotorInput2 = ThrottleCutOff;
     MotorInput3 = ThrottleCutOff;
     MotorInput4 = ThrottleCutOff;
     reset_pid();
   }
-  analogWrite(1, MotorInput1);
-  analogWrite(2, MotorInput2);
-  analogWrite(3, MotorInput3);
-  analogWrite(4, MotorInput4);
-
-  // Web server part
-  server.handleClient();
+  analogWrite(17, MotorInput1);
+  analogWrite(16, MotorInput2);
+  analogWrite(4, MotorInput3);
+  analogWrite(2, MotorInput4);
 }
